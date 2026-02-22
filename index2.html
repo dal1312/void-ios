@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VOID PRO</title>
+
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0f0f17">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="apple-touch-icon" href="icon-192.png">
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.classless.min.css">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.js"></script>
+<script src="https://unpkg.com/epubjs@0.3/dist/epub.min.js"></script>
+<script src="https://unpkg.com/mammoth@1.8.0/mammoth.browser.min.js"></script>
+
+<style>
+body{
+background:#0f0f17;
+color:#e0e0ff;
+padding:1rem;
+font-family:system-ui;
+}
+textarea{
+min-height:200px;
+}
+.drop{
+border:2px dashed #a855f7;
+padding:1rem;
+text-align:center;
+margin:1rem 0;
+border-radius:10px;
+cursor:pointer;
+}
+#progress{
+height:8px;
+background:#222;
+border-radius:4px;
+margin:.5rem 0;
+overflow:hidden;
+}
+#bar{
+height:100%;
+width:0%;
+background:linear-gradient(90deg,#7c3aed,#a855f7);
+transition:width .3s;
+}
+</style>
+</head>
+
+<body>
+
+<h3>VOID PRO</h3>
+
+<select id="from">
+<option value="auto">Rileva</option>
+<option value="it" selected>Italiano</option>
+<option value="en">Inglese</option>
+<option value="la">Latino</option>
+<option value="yi">Yiddish</option>
+</select>
+
+<select id="to">
+<option value="en" selected>Inglese</option>
+<option value="it">Italiano</option>
+<option value="la">Latino</option>
+<option value="yi">Yiddish</option>
+</select>
+
+<textarea id="input" placeholder="Scrivi o carica file..."></textarea>
+<textarea id="output" readonly placeholder="Risultato..."></textarea>
+
+<div class="drop" id="drop">
+Carica TXT / PDF / DOCX / EPUB
+<input type="file" id="file" hidden accept=".txt,.pdf,.docx,.epub">
+</div>
+
+<div id="progress"><div id="bar"></div></div>
+
+<button id="go">Correggi + Traduci</button>
+<button id="download">Scarica TXT</button>
+
+<script>
+
+const input=document.getElementById("input");
+const output=document.getElementById("output");
+const fileInput=document.getElementById("file");
+const drop=document.getElementById("drop");
+const bar=document.getElementById("bar");
+
+drop.onclick=()=>fileInput.click();
+
+fileInput.onchange=async(e)=>{
+const file=e.target.files[0];
+if(!file) return;
+
+const name=file.name.toLowerCase();
+
+if(name.endsWith(".txt")){
+input.value=await file.text();
+}
+
+else if(name.endsWith(".pdf")){
+const pdf=await pdfjsLib.getDocument(await file.arrayBuffer()).promise;
+let text="";
+for(let i=1;i<=pdf.numPages;i++){
+const page=await pdf.getPage(i);
+const content=await page.getTextContent();
+text+=content.items.map(x=>x.str).join(" ")+"\n";
+bar.style.width=((i/pdf.numPages)*100)+"%";
+}
+input.value=text;
+}
+
+else if(name.endsWith(".docx")){
+const result=await mammoth.extractRawText({arrayBuffer:await file.arrayBuffer()});
+input.value=result.value;
+}
+
+else if(name.endsWith(".epub")){
+const book=ePub(await file.arrayBuffer());
+await book.ready;
+let text="";
+let total=book.spine.spineItems.length;
+let count=0;
+for(const section of book.spine.spineItems){
+const html=await book.load(section.href);
+const doc=new DOMParser().parseFromString(html,"text/html");
+text+=doc.body.textContent+"\n";
+count++;
+bar.style.width=((count/total)*100)+"%";
+}
+input.value=text;
+}
+bar.style.width="0%";
+};
+
+function fixText(t){
+if(!t) return "";
+t=t.replace(/\s+/g," ").trim();
+const dict={
+"perche":"perché",
+"qual'è":"qual è",
+"un pò":"un po'",
+"cmq":"comunque",
+"nn":"non",
+"im":"I'm",
+"dont":"don't",
+"cant":"can't",
+"iesus":"Iesus",
+"christus":"Christus",
+"deus":"Deus"
+};
+for(const k in dict){
+t=t.replace(new RegExp("\\b"+k+"\\b","gi"),dict[k]);
+}
+if(!/[.!?]$/.test(t)) t+=".";
+return t;
+}
+
+async function translateChunks(text,sl,tl){
+if(sl===tl) return text;
+
+let chunkSize=4000;
+let result="";
+let chunks=[];
+
+for(let i=0;i<text.length;i+=chunkSize){
+chunks.push(text.slice(i,i+chunkSize));
+}
+
+for(let i=0;i<chunks.length;i++){
+const url=`https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sl}&tl=${tl}&dt=t&q=${encodeURIComponent(chunks[i])}`;
+try{
+const r=await fetch(url);
+const d=await r.json();
+result+=d[0].map(x=>x[0]).join("");
+}catch{
+result+=chunks[i];
+}
+bar.style.width=((i+1)/chunks.length*100)+"%";
+}
+
+return result;
+}
+
+document.getElementById("go").onclick=async()=>{
+bar.style.width="0%";
+
+let corrected=fixText(input.value);
+input.value=corrected;
+
+let result=await translateChunks(
+corrected,
+document.getElementById("from").value,
+document.getElementById("to").value
+);
+
+output.value=result;
+
+if(document.getElementById("to").value==="yi"){
+output.dir="rtl";
+}else{
+output.dir="ltr";
+}
+
+bar.style.width="100%";
+setTimeout(()=>bar.style.width="0%",1000);
+};
+
+document.getElementById("download").onclick=()=>{
+const blob=new Blob([output.value],{type:"text/plain"});
+const a=document.createElement("a");
+a.href=URL.createObjectURL(blob);
+a.download="void.txt";
+a.click();
+};
+
+</script>
+
+</body>
+</html>
+	
+	
